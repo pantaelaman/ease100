@@ -1,0 +1,33 @@
+cabal-version:      3.0
+name:               ase100cco
+version:            0.1.0.0
+-- synopsis:
+-- description:
+license:            GPL-3.0-or-later
+license-file:       LICENSE
+author:             pantaelaman
+maintainer:         pantaelaman@pantaelaman.xyz
+-- copyright:
+category:           Compiler
+build-type:         Simple
+extra-doc-files:    CHANGELOG.md
+-- extra-source-files:
+
+common warnings
+    ghc-options: -Wall
+
+executable ase100cco
+    import:           warnings
+    main-is:          Main.hs
+    other-modules:    Parser
+    -- other-extensions:
+    build-depends:
+      , base ^>=4.20.0.0
+      , extra ^>= 1.8
+      , megaparsec ^>= 9.7.0
+      , mtl ^>= 2.3.1
+      , unordered-containers ^>= 0.2.20
+      , static-hash ^>= 0.0.2
+      , text ^>= 2.1.2
+    hs-source-dirs:   app
+    default-language: GHC2024
