@@ -134,11 +134,13 @@ chunker = concat <$> manyTill
   where
     parseLine :: Parser [(ChunkOffset, Chunk)]
     parseLine = do
+      lblOffset <- getOffset
       (optional $ try $ L.nonIndented whitespace safeIdentifier) >>= \x ->
         case x of
           Just lbl -> do
             st <- get
-            if HM.member lbl (st^.pstLbls) then fail $ "duplicate label " ++ lbl
+            if HM.member lbl (st^.pstLbls) then
+              region (setErrorOffset lblOffset) $ fail $ "duplicate label " ++ lbl
             else pstLbls %= HM.insert lbl (st^.pstAddr)
           Nothing -> return ()
 
@@ -158,10 +160,14 @@ chunker = concat <$> manyTill
           <|> try (singleton . Padding <$> parsePadding)
 
 parseDirective :: Parser [(ChunkOffset, Chunk)]
-parseDirective = do
-  _ <- lexeme $ C.char '#' >> L.symbol whitespace (T.pack "include")
+parseDirective = label "directive" $
+  C.char '#' >> (try parseIncludeDirective <|> try parseDefineDirective)
+
+parseIncludeDirective :: Parser [(ChunkOffset, Chunk)]
+parseIncludeDirective = label "include directive" $ do
+  _ <- L.symbol whitespace (T.pack "include")
   offset <- getOffset
-  filename >>= \fname -> do
+  lexeme filename >>= \fname -> do
     ftext <- liftIO $ TIO.readFile fname
     let posState = initialPosState fname ftext
     pstSrcs %= HM.insert fname (SrcInfo offset posState)
@@ -176,6 +182,20 @@ parseDirective = do
   where
     filename :: Parser String
     filename = manyTill anySingle eol
+
+parseDefineDirective :: Parser [(ChunkOffset, Chunk)]
+parseDefineDirective = label "define directive" $ do
+  _ <- L.symbol whitespace (T.pack "define")
+  lblOffset <- getOffset
+  lbl <- lexeme safeIdentifier
+  valOffset <- getOffset
+  constVal <- lexeme number >>= checkIntBounds valOffset
+  st <- get
+  if HM.member lbl $ st^.pstLbls then
+    region (setErrorOffset lblOffset) $ fail $ "duplicate label \"" ++ lbl ++ "\""
+  else
+    pstLbls %= HM.insert lbl (constVal)
+  return []
 
 parsePadding :: Parser Word32
 parsePadding = lexeme . label "padding" $ C.char '$' >> do
@@ -235,17 +255,12 @@ lexeme = L.lexeme whitespace
 
 parseValue :: Parser Value
 parseValue = lexeme . label "const value" $
-  try charLit
-    <|> (do
+    (do
       offset <- getOffset
       fmap VInt $ checkIntBounds offset =<< try number)
     <|> try expr
     <|> (VLabel <$> try safeIdentifier)
   where
-    charLit :: Parser Value
-    charLit =
-      label "character literal" $ VInt . fromIntegral . fromEnum
-        <$> between (C.char '\'') (C.char '\'') L.charLiteral
     expr :: Parser Value
     expr = label "constant expression" . between (C.char '(') (C.char ')') $ do
       v1 <- parseValue
@@ -256,12 +271,16 @@ parseValue = lexeme . label "const value" $
     operator = (C.char '+' >> return (+)) <|> (C.char '-' >> return (-))
 
 number :: Parser Integer
-number = try hexLit <|> try decLit
+number = try hexLit <|> try decLit <|> try charLit
   where
     decLit :: Parser Integer
     decLit = label "decimal literal" $ (fmap negate $ C.char '-' >> L.decimal) <|> L.decimal
     hexLit :: Parser Integer
     hexLit = label "hexadecimal literal" $ (C.char '0' >> C.char 'x' >> L.hexadecimal)
+    charLit :: Parser Integer
+    charLit =
+      label "character literal" $ fromIntegral . fromEnum
+        <$> between (C.char '\'') (C.char '\'') L.charLiteral
 
 checkIntBounds :: Int -> Integer -> Parser Word32
 checkIntBounds offset num -- takes offset as a param so that errors come at the front of the number
