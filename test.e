@@ -33,5 +33,3 @@ ptr 0
 eptr 0
 arr 0
 
-consts_sec
-#include consts.e

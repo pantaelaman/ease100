@@ -31,5 +31,6 @@ executable ase100cco
       , static-hash ^>= 0.0.2
       , text ^>= 2.1.2
       , lens ^>= 5.3.2
+      , optparse-applicative ^>= 0.18.1
     hs-source-dirs:   app
     default-language: GHC2024
