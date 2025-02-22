@@ -16,7 +16,7 @@ retaddr 0
 
 wloop         cpta ptr arr ptr
               add ptr ptr step
-              bne wloopi ptr econd
+              bne wloop ptr econd
 
 rloop         cpfa store arr ptr
               cpta store arr eptr
@@ -32,3 +32,6 @@ store 0
 ptr 0
 eptr 0
 arr 0
+
+consts_sec
+#include consts.e

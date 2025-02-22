@@ -1,15 +1,18 @@
 module Main where
 import System.Environment
 
+import Data.List
+import Control.Lens
 import qualified Text.Megaparsec as MP
-import qualified Data.Text.IO as TIO
 
 import Parser
 
 main :: IO ()
 main = do
   args <- getArgs
-  inp <- TIO.readFile $ args !! 0
-  case parse inp of
+  (parseResult, st) <- parse $ args !! 0
+  mconcat $ intersperse (putStr "\n") $ (putStr . MP.errorBundlePretty) <$> st^.pstErrs
+  putStr "\n"
+  case parseResult of
     Left err -> putStr $ MP.errorBundlePretty err
     Right bytecode -> print bytecode

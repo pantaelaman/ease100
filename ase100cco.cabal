@@ -26,8 +26,10 @@ executable ase100cco
       , extra ^>= 1.8
       , megaparsec ^>= 9.7.0
       , mtl ^>= 2.3.1
+      , containers ^>= 0.7
       , unordered-containers ^>= 0.2.20
       , static-hash ^>= 0.0.2
       , text ^>= 2.1.2
+      , lens ^>= 5.3.2
     hs-source-dirs:   app
     default-language: GHC2024

@@ -1,7 +1,13 @@
+{-# LANGUAGE TemplateHaskell #-}
 module Parser where
 
+import Unsafe.Coerce -- teehee
+import qualified Data.List.NonEmpty as NE
+import Text.Megaparsec.Error
+import Control.Arrow
+import Text.Megaparsec.State
+import Control.Lens hiding (noneOf)
 import Data.Void
-import Text.Megaparsec.Debug
 import Data.List
 import Data.Maybe
 import Text.Megaparsec hiding (Label)
@@ -10,27 +16,53 @@ import qualified Text.Megaparsec.Char.Lexer as L
 import Control.Monad.State.Strict
 import qualified Data.HashMap.Strict as HM
 import qualified Data.StaticHash as SH
-import Control.Arrow
 import qualified Data.Text as T
+import qualified Data.Text.IO as TIO
+import qualified Data.Set as E
+import Data.Word
+import Data.Int
 
-type LabelMap = HM.HashMap String Int
-type InternalParser = Parsec Void T.Text
+type LabelMap = HM.HashMap String Word32
+type SrcMap = HM.HashMap String SrcInfo
 type InternalPEB = ParseErrorBundle T.Text Void
-type Parser = StateT (Int, LabelMap) InternalParser
+type Parser = ParsecT Void T.Text (StateT PState IO)
 
-data Value = VInt Int | VLabel String | VConstExpr Value Value (Int -> Int -> Int)
+data SrcInfo = SrcInfo {
+  srcInclusionOffset :: Int,
+  srcPosState :: PosState T.Text }
+  deriving Show
+
+data PState = PState {
+  _pstAddr :: Word32,
+  _pstLbls :: LabelMap,
+  _pstErrs :: [InternalPEB],
+  _pstSrcs :: SrcMap }
+  deriving Show
+makeLenses ''PState
+
+newPState :: PState
+newPState = PState 0 HM.empty [] HM.empty
+
+data Value = VInt Word32 | VLabel String | VConstExpr Value Value (Word32 -> Word32 -> Word32)
 
 instance Show Value where
   show (VInt n) = "VInt " ++ show n
   show (VLabel lbl) = "VLabel " ++ show lbl
   show (VConstExpr v1 v2 _) = "VConstExpr (" ++ show v1 ++ " ? " ++ show v2 ++ ")"
 
-data Instr = Instr Int Value Value Value
+data Instr = Instr Word32 Value Value Value
   deriving Show
-data Chunk = CInstr Instr | Lit Value | Padding Int
+data Chunk = CInstr Instr | Lit Value | Padding Word32
   deriving Show
 
-instrOpcodes :: SH.StaticHash String Int
+data ChunkOffset = COLocal Int | CORemote Int String
+  deriving Show
+
+applyRemote :: String -> ChunkOffset -> ChunkOffset
+applyRemote _ c@(CORemote _ _) = c -- remote files don't get more remote
+applyRemote src (COLocal offset) = CORemote offset src
+
+instrOpcodes :: SH.StaticHash String Word32
 instrOpcodes = SH.fromList [
   ("halt", 0),
   ("add", 1),
@@ -54,73 +86,110 @@ instrOpcodes = SH.fromList [
 vzero :: Value
 vzero = VInt 0
 
-size :: Chunk -> Int
+size :: Chunk -> Word32
 size (CInstr _) = 4
 size (Lit _) = 1
 size (Padding paddingSize) = paddingSize
 
-parse :: T.Text -> Either InternalPEB ([Int], LabelMap)
-parse = runParser (second snd <$> runStateT parser (0, HM.empty)) "fname"
+parse :: String -> IO ((Either InternalPEB [Word32], PState))
+parse fname = do
+  ftext <- TIO.readFile fname
+  runStateT (runParserT parser fname ftext) newPState
 
-parser :: Parser [Int]
+parser :: Parser [Word32]
 parser = do
   chunks <- chunker
-  (_, lbls) <- get
+  lbls <- _pstLbls <$> get
   concat <$> mapM (uncurry $ evalChunk lbls) chunks
   where
-    evalChunk :: LabelMap -> Int -> Chunk -> Parser [Int]
-    evalChunk _ _ (Padding pad) = return $ replicate pad 0
+    evalChunk :: LabelMap -> ChunkOffset -> Chunk -> Parser [Word32]
+    evalChunk _ _ (Padding pad) = return $ replicate (fromIntegral pad) 0
     evalChunk lbls offset (Lit val) = singleton <$> evalValue lbls offset val
     evalChunk lbls offset (CInstr (Instr opcode v1 v2 v3)) = sequence $
       return opcode : evalValue lbls offset v1 : evalValue lbls offset v2 : evalValue lbls offset v3 : []
-    evalValue :: LabelMap -> Int -> Value -> Parser Int
+    evalValue :: LabelMap -> ChunkOffset -> Value -> Parser Word32
     evalValue _ _ (VInt n) = return n
     evalValue lbls offset (VLabel lbl) = case HM.lookup lbl lbls of
       Just addr -> return addr
-      Nothing -> region (setErrorOffset offset) $ fail $ "label \"" ++ lbl ++ "\" doesn't exist"
-    evalValue lbls offset (VConstExpr v1 v2 op) = op <$> evalValue lbls offset v1 <*> evalValue lbls offset v2
+      Nothing -> errAtOffset lbl offset
+    evalValue lbls offset (VConstExpr v1 v2 opr) =
+      opr <$> evalValue lbls offset v1 <*> evalValue lbls offset v2
+    errAtOffset :: String -> ChunkOffset -> Parser a
+    errAtOffset lbl (COLocal offset) = region (setErrorOffset offset) $
+      fail $ "label \"" ++ lbl ++ "\" doesn't exist"
+    errAtOffset lbl (CORemote offset src) = do
+      srcs <- _pstSrcs <$> get
+      let srcInfo = srcs HM.! src
+      let remoteError = FancyError offset (E.singleton . ErrorFail $ "label \"" ++ lbl ++ "\" doesn't exist")
+      pstErrs %= (:) (ParseErrorBundle (NE.singleton remoteError) $ srcPosState srcInfo)
+      region (setErrorOffset $ srcInclusionOffset srcInfo) $
+        fail $ "error in included file \"" ++ src ++ "\""
 
 eol :: Parser ()
 eol = eof <|> (C.eol >> return ())
 
-chunker :: Parser [(Int, Chunk)]
-chunker = dbg "here" $ concat <$> manyTill (try parseLine <|> (lift whitespace >> eol >> return [])) eof
+chunker :: Parser [(ChunkOffset, Chunk)]
+chunker = concat <$> manyTill
+  (try parseDirective <|> try parseLine <|> (whitespace >> eol >> return [])) eof
   where
-    parseLine :: Parser [(Int, Chunk)]
-    parseLine = dbg "str" $ do
-      (optional $ try $ lift $ L.nonIndented whitespace safeIdentifier) >>= \x ->
+    parseLine :: Parser [(ChunkOffset, Chunk)]
+    parseLine = do
+      (optional $ try $ L.nonIndented whitespace safeIdentifier) >>= \x ->
         case x of
           Just lbl -> do
-            (addr, lbls) <- get
-            if HM.member lbl lbls then fail $ "duplicate label " ++ lbl
-            else put (addr, HM.insert lbl addr lbls)
+            st <- get
+            if HM.member lbl (st^.pstLbls) then fail $ "duplicate label " ++ lbl
+            else pstLbls %= HM.insert lbl (st^.pstAddr)
           Nothing -> return ()
 
-      lift whitespace
+      whitespace
 
       offset <- getOffset
-      chunks <- try (singleton . ((,) offset) . CInstr <$> lift parseInstr) <|> try parseNonInstr
+      chunks <- try (singleton . ((,) $ COLocal offset) . CInstr <$> parseInstr) <|> try parseNonInstr
       -- increment addr based on chunk sizes
-      mapM (\c -> (modify . first . (+) . size $ snd c) *> return c) chunks <* eol
-    parseNonInstr :: Parser [(Int, Chunk)]
+      mapM (\c -> ((pstAddr %= (+) (size $ snd c)) *> return c)) chunks <* eol
+    parseNonInstr :: Parser [(ChunkOffset, Chunk)]
     parseNonInstr = do
       fmap concat $ many $ do
         offset <- getOffset
-        fmap ((,) offset <$>) $
-          try (singleton . Lit <$> lift parseValue)
-          <|> try (lift parseString)
-          <|> try (singleton . Padding <$> lift parsePadding)
+        fmap ((,) (COLocal offset) <$>) $
+          try (singleton . Lit <$> parseValue)
+          <|> try parseString
+          <|> try (singleton . Padding <$> parsePadding)
 
-parsePadding :: InternalParser Int
-parsePadding = lexeme . label "padding" $ C.char '$' >> number
+parseDirective :: Parser [(ChunkOffset, Chunk)]
+parseDirective = do
+  _ <- lexeme $ C.char '#' >> L.symbol whitespace (T.pack "include")
+  offset <- getOffset
+  filename >>= \fname -> do
+    ftext <- liftIO $ TIO.readFile fname
+    let posState = initialPosState fname ftext
+    pstSrcs %= HM.insert fname (SrcInfo offset posState)
+    st <- get
+    (parseResult, newst) <- liftIO $ runStateT (runParserT chunker fname ftext) st
+    put newst
+    case parseResult of
+      Left peb ->
+        (pstErrs %= (:) peb)
+          >> region (setErrorOffset offset) (fail $ "error in included file \"" ++ fname ++ "\"")
+      Right chunks -> return $ map (first $ applyRemote fname) $ chunks
+  where
+    filename :: Parser String
+    filename = manyTill anySingle eol
+
+parsePadding :: Parser Word32
+parsePadding = lexeme . label "padding" $ C.char '$' >> do
+  offset <- getOffset
+  number >>= checkIntBounds offset
 
 -- Convenience types in the form of "some characters" which become just a string of values
-parseString :: InternalParser [Chunk]
+parseString :: Parser [Chunk]
 parseString =
-  lexeme . label "string literal" $ (Lit. VInt . fromEnum <$>) <$> between (C.char '"') (C.char '"') (many $ noneOf "\"")
+  lexeme . label "string literal" $ (Lit. VInt . fromIntegral . fromEnum <$>)
+    <$> between (C.char '"') (C.char '"') (many $ noneOf "\"")
 
-parseInstr :: InternalParser Instr
-parseInstr = lexeme (label "operation" identifier) >>= \raw_instr -> do
+parseInstr :: Parser Instr
+parseInstr = lexeme (label "instruction" identifier) >>= \raw_instr -> do
   case raw_instr of
     "halt" -> return $ Instr 0 vzero vzero vzero
     "add" -> ternary 1
@@ -140,48 +209,69 @@ parseInstr = lexeme (label "operation" identifier) >>= \raw_instr -> do
     "blt" -> ternary 15
     "call" -> binary 16
     "ret" -> unary 17
-    op -> fail $ "unknown operation" ++ op
+    opr -> fail $ "unknown operation" ++ opr
   where
     ternary opcode = Instr opcode <$> parseValue <*> parseValue <*> parseValue
     binary opcode = Instr opcode <$> parseValue <*> parseValue <*> return vzero
     unary opcode = Instr opcode <$> parseValue <*> return vzero <*> return vzero
 
-identifier :: InternalParser String
+identifier :: Parser String
 identifier = try $ (:) <$> C.letterChar <*> many (C.alphaNumChar <|> C.char '_')
 
-safeIdentifier :: InternalParser String
+safeIdentifier :: Parser String
 safeIdentifier = label "valid identifier" $ identifier >>= \ident ->
   if isNothing $ SH.lookup ident instrOpcodes then return ident
   else fail $ "reserved identifier" ++ ident
 
-whitespace :: InternalParser ()
+whitespace :: Parser ()
 whitespace = L.space
   C.hspace1
   (L.skipLineComment $ T.pack "//")
   (L.skipBlockComment (T.pack "/*") (T.pack "*/"))
 
 -- wraps with local whitespace
-lexeme :: InternalParser v -> InternalParser v
+lexeme :: Parser v -> Parser v
 lexeme = L.lexeme whitespace
 
-parseValue :: InternalParser Value
-parseValue = lexeme . label "const value" $ try charLit <|> try (VInt <$> number) <|> try expr <|> try (VLabel <$> safeIdentifier)
+parseValue :: Parser Value
+parseValue = lexeme . label "const value" $
+  try charLit
+    <|> (do
+      offset <- getOffset
+      fmap VInt $ checkIntBounds offset =<< try number)
+    <|> try expr
+    <|> (VLabel <$> try safeIdentifier)
   where
-    charLit :: InternalParser Value
-    charLit = label "character literal" $ VInt . fromEnum <$> between (C.char '\'') (C.char '\'') L.charLiteral
-    expr :: InternalParser Value
+    charLit :: Parser Value
+    charLit =
+      label "character literal" $ VInt . fromIntegral . fromEnum
+        <$> between (C.char '\'') (C.char '\'') L.charLiteral
+    expr :: Parser Value
     expr = label "constant expression" . between (C.char '(') (C.char ')') $ do
       v1 <- parseValue
-      op <- lexeme operator
+      opr <- lexeme operator
       v2 <- parseValue
-      return $ VConstExpr  v1 v2 op
-    operator :: (MonadParsec e s m, Token s ~ Char) => m (Int -> Int -> Int)
+      return $ VConstExpr  v1 v2 opr
+    operator :: Parser (Word32 -> Word32 -> Word32)
     operator = (C.char '+' >> return (+)) <|> (C.char '-' >> return (-))
 
-number :: InternalParser Int
+number :: Parser Integer
 number = try hexLit <|> try decLit
   where
-    decLit :: InternalParser Int
-    decLit = label "decimal literal" $ L.decimal
-    hexLit :: InternalParser Int
+    decLit :: Parser Integer
+    decLit = label "decimal literal" $ (fmap negate $ C.char '-' >> L.decimal) <|> L.decimal
+    hexLit :: Parser Integer
     hexLit = label "hexadecimal literal" $ (C.char '0' >> C.char 'x' >> L.hexadecimal)
+
+checkIntBounds :: Int -> Integer -> Parser Word32
+checkIntBounds offset num -- takes offset as a param so that errors come at the front of the number
+  | num <= fromIntegral (maxBound :: Word32) && num >= fromIntegral (minBound :: Word32) =
+    return $ fromIntegral num
+    -- hehehe i love "unsafe" code :)))))
+  | num >= fromIntegral (minBound :: Int32) = return $ unsafeCoerce $ (fromIntegral num :: Int32)
+  | otherwise = do
+    -- required to bypass alternatives; a number can't be interpreted any other way ˉ\(ツ)/ˉ
+    -- basically a janky hack :)
+    registerParseError $ FancyError offset $ E.singleton $ ErrorFail "number too large, must fit within 32 bits"
+    -- this is fine, since the parser is guaranteed to fail (an error exists)
+    return 0
