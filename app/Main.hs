@@ -78,6 +78,6 @@ main = do
     wordToLBL :: String -> Word32 -> String
     wordToLBL lbl val = lbl ++ "\t" ++ show val ++ "\t" ++ "(0x" ++ showHex val ")"
     wordToE :: Word32 -> String
-    wordToE v = "  " ++ show v ++ "\n"
+    wordToE v = "  " ++ show (unsafeCoerce v :: Int32) ++ "\n"
     lblOrdering :: (String, Word32) -> (String, Word32) -> Ordering
     lblOrdering (_, a) (_, b) = compare a b
