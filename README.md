@@ -8,7 +8,7 @@ This compiler add these features to the original ase100 tool:
 - Multiple literals on the same line
 - String literals
 - Define directives (akin to C's `#define`)
-- Block comments
+- Block comments (between `/*` and `*/`)
 
 Planned features:
 
