@@ -16,7 +16,7 @@ extra-doc-files:    CHANGELOG.md
 common warnings
     ghc-options: -Wall
 
-executable ase100cco
+executable ease
     import:           warnings
     main-is:          Main.hs
     other-modules:    Parser

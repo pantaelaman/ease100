@@ -70,6 +70,7 @@ instrOpcodes = SH.fromList [
   ("mult", 3),
   ("div", 4),
   ("cp", 5),
+  ("cpdata", 5),
   ("and", 6),
   ("or", 7),
   ("not", 8),
@@ -217,6 +218,11 @@ parseInstr = lexeme (label "instruction" identifier) >>= \raw_instr -> do
     "mult" -> ternary 3
     "div" -> ternary 4
     "cp" -> binary 5
+    "cpdata" -> do
+      target <- parseValue
+      val <- parseValue
+      st <- get
+      return $ Instr 5 target (VInt $ st^.pstAddr + 3) val
     "and" -> ternary 6
     "or" -> ternary 7
     "not" -> binary 8
