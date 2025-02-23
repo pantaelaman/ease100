@@ -1,5 +1,6 @@
 module Main where
 
+import Data.Tuple.Extra (secondM)
 import qualified Data.HashMap.Strict as HM
 import Numeric
 import Data.Int
@@ -64,7 +65,8 @@ main = do
         hPutStr mifFile "DEPTH = 16384;\r\nWIDTH = 32;\r\nADDRESS_RADIX = DEC;\r\nDATA_RADIX = DEC;\r\nCONTENT\r\nBEGIN\r\n"
         mapM_ (hPutStr mifFile) $ map (uncurry wordToMIF) $ zip [0..] bytecode
         hPutStr mifFile "END;\r\n \r\n\r\n"
-        mapM_ (hPutStrLn lblFile . uncurry wordToLBL) $ sortBy lblOrdering $ HM.toList $ st^.pstLbls
+        mapM_ (hPutStrLn lblFile . uncurry wordToLBL) $ sortBy lblOrdering $
+          catMaybes $ map (secondM $ either (Just) (const Nothing)) $ HM.toList $ st^.pstLbls
 
       case crossname args of
         Just crossn -> do

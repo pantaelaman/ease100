@@ -22,10 +22,15 @@ import qualified Data.Set as E
 import Data.Word
 import Data.Int
 
-type LabelMap = HM.HashMap String Word32
+data Value = VInt Word32 | VLabel String | VConstExpr Value Value (Word32 -> Word32 -> Word32)
+instance Show Value where
+  show (VInt n) = "VInt " ++ show n
+  show (VLabel lbl) = "VLabel " ++ show lbl
+  show (VConstExpr v1 v2 _) = "VConstExpr (" ++ show v1 ++ " ? " ++ show v2 ++ ")"
+
+type LabelMap = HM.HashMap String (Either Word32 Value)
 type SrcMap = HM.HashMap String SrcInfo
 type InternalPEB = ParseErrorBundle T.Text Void
-type Parser = ParsecT Void T.Text (StateT PState IO)
 
 data SrcInfo = SrcInfo {
   srcInclusionOffset :: Int,
@@ -40,15 +45,10 @@ data PState = PState {
   deriving Show
 makeLenses ''PState
 
+type Parser = ParsecT Void T.Text (StateT PState IO)
+
 newPState :: PState
 newPState = PState 0 HM.empty [] HM.empty
-
-data Value = VInt Word32 | VLabel String | VConstExpr Value Value (Word32 -> Word32 -> Word32)
-
-instance Show Value where
-  show (VInt n) = "VInt " ++ show n
-  show (VLabel lbl) = "VLabel " ++ show lbl
-  show (VConstExpr v1 v2 _) = "VConstExpr (" ++ show v1 ++ " ? " ++ show v2 ++ ")"
 
 data Instr = Instr Word32 Value Value Value
   deriving Show
@@ -111,7 +111,8 @@ parser = do
     evalValue :: LabelMap -> ChunkOffset -> Value -> Parser Word32
     evalValue _ _ (VInt n) = return n
     evalValue lbls offset (VLabel lbl) = case HM.lookup lbl lbls of
-      Just addr -> return addr
+      Just (Right val) -> evalValue lbls offset val
+      Just (Left addr) -> return addr
       Nothing -> errAtOffset lbl offset
     evalValue lbls offset (VConstExpr v1 v2 opr) =
       opr <$> evalValue lbls offset v1 <*> evalValue lbls offset v2
@@ -142,7 +143,7 @@ chunker = concat <$> manyTill
             st <- get
             if HM.member lbl (st^.pstLbls) then
               region (setErrorOffset lblOffset) $ fail $ "duplicate label " ++ lbl
-            else pstLbls %= HM.insert lbl (st^.pstAddr)
+            else pstLbls %= HM.insert lbl (Left $ st^.pstAddr)
           Nothing -> return ()
 
       whitespace
@@ -189,13 +190,12 @@ parseDefineDirective = label "define directive" $ do
   _ <- L.symbol whitespace (T.pack "define")
   lblOffset <- getOffset
   lbl <- lexeme safeIdentifier
-  valOffset <- getOffset
-  constVal <- lexeme number >>= checkIntBounds valOffset
+  val <- parseValue
   st <- get
   if HM.member lbl $ st^.pstLbls then
     region (setErrorOffset lblOffset) $ fail $ "duplicate label \"" ++ lbl ++ "\""
   else
-    pstLbls %= HM.insert lbl (constVal)
+    pstLbls %= HM.insert lbl (Right val)
   return []
 
 parsePadding :: Parser Word32
@@ -300,3 +300,4 @@ checkIntBounds offset num -- takes offset as a param so that errors come at the 
     registerParseError $ FancyError offset $ E.singleton $ ErrorFail "number too large, must fit within 32 bits"
     -- this is fine, since the parser is guaranteed to fail (an error exists)
     return 0
+

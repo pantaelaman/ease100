@@ -1,0 +1,14 @@
+DEPTH = 16384;
+WIDTH = 32;
+ADDRESS_RADIX = DEC;
+DATA_RADIX = DEC;
+CONTENT
+BEGIN
+	0	:	5;
+	1	:	4;
+	2	:	3;
+	3	:	2;
+	4	:	0;
+END;
+ 
+

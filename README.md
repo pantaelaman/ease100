@@ -13,7 +13,6 @@ This compiler add these features to the original ase100 tool:
 Planned features:
 
 - Escape sequences in string and char literals
-- Better define directives, for including expressions
 - Function-style macros
 
 ## Additional syntax
@@ -57,7 +56,7 @@ is equivalent to:
 ```
 
 ### Define directives
-Define directives, similarly to `include` directives, are denoted with `#define` followed by an unused label name and a literal. They are functionally the same as labels, but their value is that of the literal, not of their position in the code.
+Define directives, similarly to `include` directives, are denoted with `#define` followed by an unused label name and a value (literal, label, or expression). They can be used as if they were labels.
 For example:
 ```
 #define ORIGIN 0
@@ -75,4 +74,3 @@ label1 label2
 label2 0
 label3 1
 ```
-These directives are represented as labels in the compiler, and thus will also be outputted in the `.labels` file, sorted into the others (for now, it's on the to-do to rework this).
