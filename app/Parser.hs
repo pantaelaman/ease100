@@ -22,7 +22,10 @@ import qualified Data.Set as E
 import Data.Word
 import Data.Int
 
+-- Values are either literal numbers, references to labels, or expressions made up of
+-- two values and a combining operation.
 data Value = VInt Word32 | VLabel String | VConstExpr Value Value (Word32 -> Word32 -> Word32)
+-- for debugging
 instance Show Value where
   show (VInt n) = "VInt " ++ show n
   show (VLabel lbl) = "VLabel " ++ show lbl
@@ -48,12 +51,29 @@ type SrcMap = HM.HashMap String SrcInfo
 -- ParseErrorBundle parameterised by our constraints
 type InternalPEB = ParseErrorBundle T.Text Void
 
+-- Instr opcode arg1 arg2 arg3
+data Instr = Instr Word32 Value Value Value
+  deriving Show
+
+-- Chunks are units which represent the smallest units of the language.
+-- Padding is included here for efficiency.
+data Chunk = CInstr Instr | Lit Value | Padding Word32
+  deriving Show
+
+-- Keeps track of where a chunk came from in the source for proper error handling
+-- during the second pass. Local offsets come from the actively parsed file. At the top
+-- level, this is the source file being parsed. Remote offsets are generated when including
+-- a file; when parsing these all local offsets are converted to remote offsets.
+data ChunkOffset = COLocal Int | CORemote Int String
+  deriving Show
+
 -- Inclusion offset is here so that we can generate a reasonable error in the file in which
 -- they were included. The PosState is what the ParseErrorBundle needs for context.
 data SrcInfo = SrcInfo {
-  srcInclusionOffset :: Int,
-  srcPosState :: PosState T.Text }
+  _srcInclusionOffset :: ChunkOffset,
+  _srcPosState :: PosState T.Text }
   deriving Show
+makeLenses ''SrcInfo
 
 data PState = PState {
   _pstAddr :: Word32, -- current address, monotonically increases across parsing
@@ -76,22 +96,6 @@ type Parser = ParsecT Void T.Text (StateT PState IO)
 -- Convenience
 newPState :: PState
 newPState = PState 0 HM.empty [] HM.empty
-
--- Instr opcode arg1 arg2 arg3
-data Instr = Instr Word32 Value Value Value
-  deriving Show
-
--- Chunks are units which represent the smallest units of the language.
--- Padding is included here for efficiency.
-data Chunk = CInstr Instr | Lit Value | Padding Word32
-  deriving Show
-
--- Keeps track of where a chunk came from in the source for proper error handling
--- during the second pass. Local offsets come from the actively parsed file. At the top
--- level, this is the source file being parsed. Remote offsets are generated when including
--- a file; when parsing these all local offsets are converted to remote offsets.
-data ChunkOffset = COLocal Int | CORemote Int String
-  deriving Show
 
 -- Converts the local offsets to remote offsets by applying a specific source.
 applyRemote :: String -> ChunkOffset -> ChunkOffset
@@ -156,21 +160,19 @@ parser = do
     evalValue lbls offset (VLabel lbl) = case HM.lookup lbl lbls of
       Just (Right val) -> evalValue lbls offset val -- eval define directive values
       Just (Left addr) -> return addr -- simple label address
-      Nothing -> errAtOffset lbl offset -- missing label
+      Nothing -> errAtOffset ("label \"" ++ lbl ++ "\" doesn't exist") offset -- missing label
     evalValue lbls offset (VConstExpr v1 v2 opr) =
       opr <$> evalValue lbls offset v1 <*> evalValue lbls offset v2
-    -- generates a label not found error at the appropriate offset for a specific chunk
+    -- generates an error at the appropriate offset for a specific chunk
     -- this includes handling generating all necessary errors in the case of a remote file
     errAtOffset :: String -> ChunkOffset -> Parser a
-    errAtOffset lbl (COLocal offset) = region (setErrorOffset offset) $
-      fail $ "label \"" ++ lbl ++ "\" doesn't exist"
-    errAtOffset lbl (CORemote offset src) = do
+    errAtOffset err (COLocal offset) = region (setErrorOffset offset) $ fail err
+    errAtOffset err (CORemote offset src) = do
       srcs <- _pstSrcs <$> get
       let srcInfo = srcs HM.! src
-      let remoteError = FancyError offset (E.singleton . ErrorFail $ "label \"" ++ lbl ++ "\" doesn't exist")
-      pstErrs %= (:) (ParseErrorBundle (NE.singleton remoteError) $ srcPosState srcInfo)
-      region (setErrorOffset $ srcInclusionOffset srcInfo) $
-        fail $ "error in included file \"" ++ src ++ "\""
+      let remoteError = FancyError offset (E.singleton . ErrorFail $ err)
+      pstErrs %= (:) (ParseErrorBundle (NE.singleton remoteError) $ _srcPosState srcInfo)
+      errAtOffset ("error in included file \"" ++ src ++ "\"") $ _srcInclusionOffset srcInfo
 
 -- end of line or end of input; convenience
 eol :: Parser ()
@@ -225,10 +227,15 @@ parseIncludeDirective = label "include directive" $ do
   lexeme filename >>= \fname -> do
     ftext <- liftIO $ TIO.readFile fname
     let posState = initialPosState fname ftext
-    pstSrcs %= HM.insert fname (SrcInfo offset posState)
+    pstSrcs %= HM.insert fname (SrcInfo (COLocal offset) posState)
     st <- get
-    (parseResult, newst) <- liftIO $ runStateT (runParserT chunker fname ftext) st
+    (parseResult, newst) <- liftIO $ runStateT (runParserT chunker fname ftext) (pstSrcs .~ HM.empty $ st)
     put newst
+    -- make all new source offsets remote
+    pstSrcs %= HM.map (srcInclusionOffset %~ applyRemote fname)
+    -- combine with the old sources, keeping old sources when given the option
+    -- this has the effect of source-inclusion errors always being reported at the first instance of inclusion
+    pstSrcs %= HM.union (_pstSrcs st)
     case parseResult of
       -- if there's a parse error, generate one in this file at the point of inclusion
       Left peb -> 

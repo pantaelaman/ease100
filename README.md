@@ -12,11 +12,8 @@ This compiler add these features to the original ase100 tool:
 
 Planned features:
 
+- Missing file errors
 - Function-style macros
-
-Known bugs:
-
-- Errors in files included from files which are included themselves report the critical error properly, but the error pointing to the inclusion spot is incorrect. Not breaking, but annoying.
 
 ## Additional syntax
 ### Compile-time constant expressions
