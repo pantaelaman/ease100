@@ -18,11 +18,12 @@ import Control.Monad.Cont
 
 import Parser
 
+-- cli args
 data Args = Args
-  { fname :: String
-  , mifname :: Maybe String
-  , lblname :: Maybe String
-  , crossname :: Maybe String }
+  { fname :: String -- input filename
+  , mifname :: Maybe String -- .mif filename
+  , lblname :: Maybe String -- .labels filename
+  , crossname :: Maybe String } -- .e filename, only generated if Just
 
 argParser :: O.Parser Args
 argParser = Args
@@ -40,6 +41,7 @@ argParser = Args
     <> O.short 'e'
     <> O.long "cross"))
 
+-- TODO: add more description
 argInfo :: O.ParserInfo Args
 argInfo = O.info (argParser <**> O.helper)
   ( O.fullDesc
@@ -49,32 +51,42 @@ argInfo = O.info (argParser <**> O.helper)
 main :: IO ()
 main = do
   args <- O.execParser argInfo
-  -- drops until reaching the last period
-  let sname = reverse . dropWhile (/= '.') . reverse $ fname args
-  let mifn = fromMaybe (sname ++ "mif") $ mifname args
-  let lbln = fromMaybe (sname ++ "labels") $ lblname args
-  (parseResult, st) <- parse $ fname args
-  mconcat $ intersperse (putStr "\n") $ (putStr . MP.errorBundlePretty) <$> st^.pstErrs
-  putStr "\n"
+  -- generate default .mif and .labels filenames from input
+  let sname = reverse . dropWhile (/= '.') . reverse $ fname args -- drops from the end until reaching the last period
+  let mifn = fromMaybe (sname ++ "mif") $ mifname args -- .mif filename, either default or provided
+  let lbln = fromMaybe (sname ++ "labels") $ lblname args -- .labels filename, either default or provided
+  (parseResult, st) <- parse $ fname args -- grab parser and final state (for remote errors and labels)
+
+  -- pretty print remote errors, does nothing if no remote errors are generated
+  mconcat $ (putStrLn . MP.errorBundlePretty) <$> st^.pstErrs
   case parseResult of
+    -- pretty print local errors
+    -- a local error is guaranteed to be generated if a remote error is generated
     Left err -> putStr $ MP.errorBundlePretty err
+    -- write bytecode to appropriate file formats
     Right bytecode -> flip runContT return $ do
       mifFile <- ContT $ withFile mifn WriteMode
       lblFile <- ContT $ withFile lbln WriteMode
       liftIO $ do
+        -- mif header
         hPutStr mifFile "DEPTH = 16384;\r\nWIDTH = 32;\r\nADDRESS_RADIX = DEC;\r\nDATA_RADIX = DEC;\r\nCONTENT\r\nBEGIN\r\n"
         mapM_ (hPutStr mifFile) $ map (uncurry wordToMIF) $ zip [0..] bytecode
+        -- mif tail
         hPutStr mifFile "END;\r\n \r\n\r\n"
+        -- dump to label file
         mapM_ (hPutStrLn lblFile . uncurry wordToLBL) $ sortBy lblOrdering $
+          -- only dump labels (Left) not the define directives (Right)
           catMaybes $ map (secondM $ either (Just) (const Nothing)) $ HM.toList $ st^.pstLbls
 
       case crossname args of
+        -- create .e file if requested
         Just crossn -> do
           crossFile <- ContT $ withFile crossn WriteMode
           liftIO $ mapM_ (hPutStr crossFile . wordToE) $ bytecode
         Nothing -> return ()
 
   where
+    -- various representations of words in the file formats
     wordToMIF :: Int -> Word32 -> String
     wordToMIF i v = "\t" ++ show i ++ "\t:\t" ++ show (unsafeCoerce v :: Int32) ++ ";\r\n"
     wordToLBL :: String -> Word32 -> String

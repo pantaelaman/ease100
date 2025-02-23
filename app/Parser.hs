@@ -303,14 +303,18 @@ parseInstr = lexeme (label "instruction" identifier) >>= \raw_instr -> do
     binary opcode = Instr opcode <$> parseValue <*> parseValue <*> return vzero
     unary opcode = Instr opcode <$> parseValue <*> return vzero <*> return vzero
 
+-- identifiers in the form of a letter followed by letters, numbers, or underscores
+-- note: maybe consider allowing initial underscores
 identifier :: Parser String
 identifier = try $ (:) <$> C.letterChar <*> many (C.alphaNumChar <|> C.char '_')
 
+-- identifier which isn't a reserved keyword (the instructions)
 safeIdentifier :: Parser String
 safeIdentifier = label "valid identifier" $ identifier >>= \ident ->
   if isNothing $ SH.lookup ident instrOpcodes then return ident
   else fail $ "reserved identifier" ++ ident
 
+-- spaces and comments
 whitespace :: Parser ()
 whitespace = L.space
   C.hspace1
@@ -321,23 +325,28 @@ whitespace = L.space
 lexeme :: Parser v -> Parser v
 lexeme = L.lexeme whitespace
 
+-- reads a value: either a label, an expression, or a literal
 parseValue :: Parser Value
 parseValue = lexeme . label "const value" $
     (do
-      offset <- getOffset
+      offset <- getOffset -- offset for properly reporting number errors
       fmap VInt $ checkIntBounds offset =<< try number)
     <|> try expr
     <|> (VLabel <$> try safeIdentifier)
   where
+    -- parse an expression surrounded by parentheses
     expr :: Parser Value
     expr = label "constant expression" . between (C.char '(') (C.char ')') $ do
       v1 <- parseValue
       opr <- lexeme operator
       v2 <- parseValue
       return $ VConstExpr  v1 v2 opr
+    -- parse the two appropriate operators
     operator :: Parser (Word32 -> Word32 -> Word32)
     operator = (C.char '+' >> return (+)) <|> (C.char '-' >> return (-))
 
+-- literal number; somewhat of a misnomer since char literals are also allowed
+-- they just get converted to numbers
 number :: Parser Integer
 number = try hexLit <|> try decLit <|> try charLit
   where
@@ -350,6 +359,14 @@ number = try hexLit <|> try decLit <|> try charLit
       label "character literal" $ fromIntegral . fromEnum
         <$> between (C.char '\'') (C.char '\'') L.charLiteral
 
+-- ensure that a number is within the appropriate bounds, and throw an error
+-- (at the appropriate offset) if it's not
+-- numbers will be implicitly treated as unsigned/signed, as in numbers too large to be
+-- considered signed but small enough to be unsigned will be treated as unsigned and
+-- negative numbers will be treated as signed
+-- this is fine since the positive signed numbers are representationally equivalent to their
+-- unsigned counterparts, and operations like addition and subtraction are all valid for both
+-- types of numbers
 checkIntBounds :: Int -> Integer -> Parser Word32
 checkIntBounds offset num -- takes offset as a param so that errors come at the front of the number
   | num <= fromIntegral (maxBound :: Word32) && num >= fromIntegral (minBound :: Word32) =
