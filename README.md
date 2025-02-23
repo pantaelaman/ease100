@@ -14,6 +14,10 @@ Planned features:
 
 - Function-style macros
 
+Known bugs:
+
+- Errors in files included from files which are included themselves report the critical error properly, but the error pointing to the inclusion spot is incorrect. Not breaking, but annoying.
+
 ## Additional syntax
 ### Compile-time constant expressions
 Expressions of the type `(value + value)` are evaluated by the compiler.
