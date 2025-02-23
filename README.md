@@ -12,7 +12,6 @@ This compiler add these features to the original ase100 tool:
 
 Planned features:
 
-- Escape sequences in string and char literals
 - Function-style macros
 
 ## Additional syntax
@@ -45,7 +44,7 @@ is equivalent to:
 ```
 
 ### String literals
-String literals, like padding, can take the place of any literal. Surround a series of characters with `"` and it will be interpreted as a series of chars. Escape sequences are not yet supported.
+String literals, like padding, can take the place of any literal. Surround a series of characters with `"` and it will be interpreted as a series of chars.
 For example:
 ```
   "Hello, world!"

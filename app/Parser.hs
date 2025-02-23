@@ -207,7 +207,7 @@ parsePadding = lexeme . label "padding" $ C.char '$' >> do
 parseString :: Parser [Chunk]
 parseString =
   lexeme . label "string literal" $ (Lit. VInt . fromIntegral . fromEnum <$>)
-    <$> between (C.char '"') (C.char '"') (many $ noneOf "\"")
+    <$> ((C.char '"') >> (manyTill L.charLiteral $ C.char '"'))
 
 parseInstr :: Parser Instr
 parseInstr = lexeme (label "instruction" identifier) >>= \raw_instr -> do

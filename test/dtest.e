@@ -1,3 +1,5 @@
-  cpdata lbl 1
+#define ONE '\n'
 
-lbl 0
+  cpdata lbl ONE
+
+lbl "hello"
