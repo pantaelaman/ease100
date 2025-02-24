@@ -31,23 +31,26 @@ argParser :: O.Parser Args
 argParser = Args
   <$> O.strArgument (O.metavar "FILE")
   <*> optional (O.strOption
-    (  O.metavar "MIF FILE"
+    (  O.metavar "FILE"
     <> O.short 'm'
-    <> O.long "mif"))
+    <> O.long "mif"
+    <> O.help "Specify .mif filepath"))
   <*> optional (O.strOption
-    (  O.metavar "LABELS FILE"
+    (  O.metavar "FILE"
     <> O.short 'l'
-    <> O.long "labels"))
+    <> O.long "labels"
+    <> O.help "Specify .labels filepath"))
   <*> optional (O.strOption
-    (  O.metavar "E FILE"
+    (  O.metavar "FILE"
     <> O.short 'e'
-    <> O.long "cross"))
+    <> O.long "cross"
+    <> O.help "Generate a .e file"))
 
 -- TODO: add more description
 argInfo :: O.ParserInfo Args
 argInfo = O.info (argParser <**> O.helper)
   ( O.fullDesc
-  <> O.progDesc "Compiles FILE, generating a .mif and .labels file; also optionally a .e file"
+  <> O.progDesc "Compiles an extended ase100 file, generating .mif and .labels files.\nOptionally generates a .e file."
   <> O.header "ease - a compiler for extended ase100 programs")
 
 main :: IO ()
