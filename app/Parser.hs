@@ -1,6 +1,8 @@
 {-# LANGUAGE TemplateHaskell #-}
 module Parser where
 
+import System.IO.Error
+import qualified Control.Exception as EX
 import Unsafe.Coerce -- teehee
 import qualified Data.List.NonEmpty as NE
 import Text.Megaparsec.Error
@@ -136,6 +138,10 @@ size (CInstr _) = 4
 size (Lit _) = 1
 size (Padding paddingSize) = paddingSize
 
+-- Convenience shorthand for erring at offsets
+regionErrOffset :: Int -> String -> Parser a
+regionErrOffset offset = region (setErrorOffset offset) . fail
+
 -- Top level parsing, called from main
 parse :: String -> IO ((Either InternalPEB [Word32], PState))
 parse fname = do
@@ -166,7 +172,7 @@ parser = do
     -- generates an error at the appropriate offset for a specific chunk
     -- this includes handling generating all necessary errors in the case of a remote file
     errAtOffset :: String -> ChunkOffset -> Parser a
-    errAtOffset err (COLocal offset) = region (setErrorOffset offset) $ fail err
+    errAtOffset err (COLocal offset) = regionErrOffset offset err
     errAtOffset err (CORemote offset src) = do
       srcs <- _pstSrcs <$> get
       let srcInfo = srcs HM.! src
@@ -193,7 +199,7 @@ chunker = concat <$> manyTill
             st <- get
             if HM.member lbl (st^.pstLbls) then
               -- errs in the event a label has already been defined
-              region (setErrorOffset lblOffset) $ fail $ "duplicate label " ++ lbl
+              regionErrOffset lblOffset $ "duplicate label " ++ lbl
             else pstLbls %= HM.insert lbl (Left $ st^.pstAddr)
           Nothing -> return ()
 
@@ -224,25 +230,31 @@ parseIncludeDirective :: Parser [(ChunkOffset, Chunk)]
 parseIncludeDirective = label "include directive" $ do
   _ <- L.symbol whitespace (T.pack "include")
   offset <- getOffset
-  lexeme filename >>= \fname -> do
-    ftext <- liftIO $ TIO.readFile fname
-    let posState = initialPosState fname ftext
-    pstSrcs %= HM.insert fname (SrcInfo (COLocal offset) posState)
-    st <- get
-    (parseResult, newst) <- liftIO $ runStateT (runParserT chunker fname ftext) (pstSrcs .~ HM.empty $ st)
-    put newst
-    -- make all new source offsets remote
-    pstSrcs %= HM.map (srcInclusionOffset %~ applyRemote fname)
-    -- combine with the old sources, keeping old sources when given the option
-    -- this has the effect of source-inclusion errors always being reported at the first instance of inclusion
-    pstSrcs %= HM.union (_pstSrcs st)
-    case parseResult of
-      -- if there's a parse error, generate one in this file at the point of inclusion
-      Left peb -> 
-        (pstErrs %= (:) peb)
-          >> region (setErrorOffset offset) (fail $ "error in included file \"" ++ fname ++ "\"")
-      -- turn all local chunk offsets in this file into remote offsets
-      Right chunks -> return $ map (first $ applyRemote fname) $ chunks
+  fname <- lexeme filename
+  possible <- liftIO . EX.try $ TIO.readFile fname
+  case possible of
+    Left (e :: IOError)
+      | isDoesNotExistError e -> regionErrOffset offset $ "file \"" ++ fname ++ "\" does not exist"
+      | isPermissionError e -> regionErrOffset offset $ "not permitted to read file \"" ++ fname ++ "\""
+      | otherwise -> regionErrOffset offset $ "could not read file \"" ++ fname ++ "\""
+    Right ftext -> do
+      let posState = initialPosState fname ftext
+      pstSrcs %= HM.insert fname (SrcInfo (COLocal offset) posState)
+      st <- get
+      (parseResult, newst) <- liftIO $ runStateT (runParserT chunker fname ftext) (pstSrcs .~ HM.empty $ st)
+      put newst
+      -- make all new source offsets remote
+      pstSrcs %= HM.map (srcInclusionOffset %~ applyRemote fname)
+      -- combine with the old sources, keeping old sources when given the option
+      -- this has the effect of source-inclusion errors always being reported at the first instance of inclusion
+      pstSrcs %= HM.union (_pstSrcs st)
+      case parseResult of
+        -- if there's a parse error, generate one in this file at the point of inclusion
+        Left peb -> 
+          (pstErrs %= (:) peb)
+            >> regionErrOffset offset (fail $ "error in included file \"" ++ fname ++ "\"")
+        -- turn all local chunk offsets in this file into remote offsets
+        Right chunks -> return $ map (first $ applyRemote fname) $ chunks
   where
     -- validation? what's that
     filename :: Parser String
@@ -258,7 +270,7 @@ parseDefineDirective = label "define directive" $ do
   val <- parseValue
   st <- get
   if HM.member lbl $ st^.pstLbls then
-    region (setErrorOffset lblOffset) $ fail $ "duplicate label \"" ++ lbl ++ "\""
+    regionErrOffset lblOffset $ "duplicate label \"" ++ lbl ++ "\""
   else
   -- create new "label" - see LabelMap
     pstLbls %= HM.insert lbl (Right val)

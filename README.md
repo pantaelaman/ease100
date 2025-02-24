@@ -12,7 +12,6 @@ This compiler add these features to the original ase100 tool:
 
 Planned features:
 
-- Missing file errors
 - Function-style macros
 
 ## Additional syntax
