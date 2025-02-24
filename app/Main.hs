@@ -1,5 +1,7 @@
 module Main where
 
+import System.Exit
+import Control.Exception
 import Data.Tuple.Extra (secondM)
 import qualified Data.HashMap.Strict as HM
 import Numeric
@@ -64,15 +66,15 @@ main = do
     -- a local error is guaranteed to be generated if a remote error is generated
     Left err -> putStr $ MP.errorBundlePretty err
     -- write bytecode to appropriate file formats
-    Right bytecode -> flip runContT return $ do
-      mifFile <- ContT $ withFile mifn WriteMode
-      lblFile <- ContT $ withFile lbln WriteMode
-      liftIO $ do
+    Right bytecode -> do
+      handle (die . fileErrorText mifn) $ withFile mifn WriteMode $ \mifFile -> do
         -- mif header
         hPutStr mifFile "DEPTH = 16384;\r\nWIDTH = 32;\r\nADDRESS_RADIX = DEC;\r\nDATA_RADIX = DEC;\r\nCONTENT\r\nBEGIN\r\n"
         mapM_ (hPutStr mifFile) $ map (uncurry wordToMIF) $ zip [0..] bytecode
         -- mif tail
         hPutStr mifFile "END;\r\n \r\n\r\n"
+
+      handle (die . fileErrorText lbln) $ withFile lbln WriteMode $ \lblFile ->
         -- dump to label file
         mapM_ (hPutStrLn lblFile . uncurry wordToLBL) $ sortBy lblOrdering $
           -- only dump labels (Left) not the define directives (Right)
@@ -81,8 +83,8 @@ main = do
       case crossname args of
         -- create .e file if requested
         Just crossn -> do
-          crossFile <- ContT $ withFile crossn WriteMode
-          liftIO $ mapM_ (hPutStr crossFile . wordToE) $ bytecode
+          handle (die . fileErrorText crossn) $ withFile crossn WriteMode $ \crossFile ->
+            mapM_ (hPutStr crossFile . wordToE) $ bytecode
         Nothing -> return ()
 
   where

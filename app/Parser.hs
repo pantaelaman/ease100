@@ -1,6 +1,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 module Parser where
 
+import System.Exit
 import System.IO.Error
 import qualified Control.Exception as EX
 import Unsafe.Coerce -- teehee
@@ -143,10 +144,17 @@ regionErrOffset :: Int -> String -> Parser a
 regionErrOffset offset = region (setErrorOffset offset) . fail
 
 -- Top level parsing, called from main
+-- `die`s when it can't read the file
 parse :: String -> IO ((Either InternalPEB [Word32], PState))
-parse fname = do
-  ftext <- TIO.readFile fname
-  runStateT (runParserT parser fname ftext) newPState
+parse fname = (EX.try $ TIO.readFile fname) >>= (either (die . fileErrorText fname) $
+  \ftext -> runStateT (runParserT parser fname ftext) newPState)
+
+fileErrorText :: String -> IOError -> String
+fileErrorText fname e
+  | isDoesNotExistError e = "file \"" ++ fname ++ "\" does not exist"
+  | isPermissionError e = "not permitted to open file \"" ++ fname ++ "\""
+  | isAlreadyInUseError e = "file \"" ++ fname ++ "\" is already in use"
+  | otherwise = "could not open file \"" ++ fname ++ "\""
 
 -- Root parser, compiles chunks into words
 parser :: Parser [Word32]
@@ -233,10 +241,7 @@ parseIncludeDirective = label "include directive" $ do
   fname <- lexeme filename
   possible <- liftIO . EX.try $ TIO.readFile fname
   case possible of
-    Left (e :: IOError)
-      | isDoesNotExistError e -> regionErrOffset offset $ "file \"" ++ fname ++ "\" does not exist"
-      | isPermissionError e -> regionErrOffset offset $ "not permitted to read file \"" ++ fname ++ "\""
-      | otherwise -> regionErrOffset offset $ "could not read file \"" ++ fname ++ "\""
+    Left e -> regionErrOffset offset $ fileErrorText fname e
     Right ftext -> do
       let posState = initialPosState fname ftext
       pstSrcs %= HM.insert fname (SrcInfo (COLocal offset) posState)
