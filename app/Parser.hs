@@ -330,7 +330,7 @@ parseInstr = lexeme (label "instruction" identifier) >>= \raw_instr -> do
 -- identifiers in the form of a letter followed by letters, numbers, or underscores
 -- note: maybe consider allowing initial underscores
 identifier :: Parser String
-identifier = try $ (:) <$> C.letterChar <*> many (C.alphaNumChar <|> C.char '_')
+identifier = try $ (:) <$> (C.letterChar <|> C.char '_') <*> many (C.alphaNumChar <|> C.char '_')
 
 -- identifier which isn't a reserved keyword (the instructions)
 safeIdentifier :: Parser String
